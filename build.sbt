@@ -6,6 +6,7 @@ scalaVersion := "2.12.2"
 enablePlugins(PlayScala)
 
 libraryDependencies ++= Seq(
+  "com.auth0" % "java-jwt" % "3.4.0",
   "com.h2database" % "h2" % "1.4.192",
   "org.postgresql" % "postgresql" % "42.2.2",
   jdbc,

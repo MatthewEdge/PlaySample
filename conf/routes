@@ -3,4 +3,6 @@
 # ~~~~
 
 # An example controller showing how to write asynchronous code
+GET     /                login.LoginController.login
+GET     /token           auth.TokenCheck.tokenCheck
 GET     /quote           zim.ZimController.getQuote
