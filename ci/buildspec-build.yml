@@ -1,0 +1,31 @@
+version: 0.2
+
+# Build Spec file for AWS CodeBuild for deploying Scala Docker services to ECR. Must be running
+# on an image that has Docker installed (tested on the CodeBuild provided image aws/codebuild/docker-17.09).
+
+# NOTE: Creates a CloudFormation stack named `MyApp-APIG-${CFN_ENV}` to synchronize API Gateway Swagger
+
+# ENV Vars to set in CodeBuild
+#
+# SWAGGER_S3_BUCKET - Name of the Swagger bucket to upload the swagger.yml file to
+# REPO_NAME         - Name of the image repository in ECR (e.g. my-app) to upload the built Docker image to
+# GIT_TAG           - Git tag to checkout before building. Optional for standard builds. Required for upper env promotions
+# CFN_ENV           - CloudFormation environment being deployed. Must match envs in af-ecs-infra.yml or an error will throw
+# SERVICE_NAME      - Optional: Name of the ECS Service to redeploy
+# CLUSTER_NAME      - Optional: Name of the ECS cluster to redeploy service to
+# IMAGE_TAG         - Optional: Custom tag to append to the Docker image
+phases:
+    pre_build:
+        commands:
+            - echo "Synchronizing Swagger Spec to API Gateway"
+            - export STACK_NAME=MyApp-APIG-${CFN_ENV}
+            - aws cloudformation package --template ./ci/api-gateway-sync.yml --s3-bucket ${SWAGGER_S3_BUCKET} --output-template-file packaged.yml
+            - aws cloudformation deploy --stack-name "${STACK_NAME}" --template-file ./packaged.yml --parameter-overrides EnvironmentName=${CFN_ENV} --no-fail-on-empty-changeset
+            - aws cloudformation wait stack-create-complete --stack-name "${STACK_NAME}"
+    build:
+        commands:
+            - export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --output text --query 'Account')
+            - export APP_VERSION=$(cat build.sbt | grep '[ \t]*version :=' | sed 's/.*"\(.*\)".*/\1/')
+            - export SHORT_HASH=$(git rev-parse --short ${CODEBUILD_SOURCE_VERSION})
+            - chmod +x ./ci/docker-deploy.sh
+            - ./ci/docker-deploy.sh --env "${CFN_ENV}" --account-id "${AWS_ACCOUNT_ID}" --region "${AWS_DEFAULT_REGION}" --repo "${REPO_NAME}" --service-name "${SERVICE_NAME}" --cluster-name "${CLUSTER_NAME}" --version "${APP_VERSION}" --git-hash "${SHORT_HASH}" --tag "${IMAGE_TAG}"

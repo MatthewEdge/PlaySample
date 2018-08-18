@@ -1,0 +1,105 @@
+---
+# CloudFormation template used to synchronize the API Gateway Swagger spec.
+#
+# NOTE: This template references a local resource (swagger.yml) which must be uploaded to S3. To do this automatically:
+#     aws cloudformation package --template ./ci/api-gateway-sync.yml --s3-bucket ${SWAGGER_S3_BUCKET} --output-template-file packaged.yml
+#
+# Then run the resulting `pakaged.yml` file. This will upload the Swagger file to S3 and populate the API Gateway RestApi resource with that
+# S3 information
+#
+Parameters:
+
+  ServiceName:
+      Description: Name of the service being deployed
+      Type: String
+
+  EnvironmentName:
+      Description: Which environment are you deploying to?
+      Type: String
+      AllowedValues:
+          - dev
+          - qa
+          - uat
+          - prod
+      Default: dev
+
+  LoadBalancerUrl:
+      Description: DNS name for the Load Balancer
+      Type: String
+
+Resources:
+
+    ApiGAPI:
+        Type: AWS::ApiGateway::RestApi
+        Properties:
+            Name: !Ref ServiceName
+            ApiKeySourceType: HEADER
+            FailOnWarnings: True
+            EndpointConfiguration:
+              Types:
+                - EDGE
+            BodyS3Location: swagger.yml
+
+    # TODO Requires Custom Domain Mapping
+    # ApiGBasePathMapping:
+    #   Type: AWS::ApiGateway::BasePathMapping
+    #   DependsOn: ApiGatewayDeployment
+    #   Properties:
+    #     BasePath: /
+    #     DomainName: !Sub ${EnvironmentName}.${BaseUrl}
+    #     RestApiId:
+    #       Ref: ApiGAPI
+    #     Stage: !Ref EnvironmentName
+
+      ApiGUsagePlan:
+        Type: AWS::ApiGateway::UsagePlan
+        DependsOn: ApiGatewayDeployment
+        Properties:
+          ApiStages:
+            - ApiId: !Ref ApiGAPI
+              Stage: !Ref EnvironmentName
+          Description: !Sub ${ServiceName}-${EnvironmentName}
+          Throttle:
+            BurstLimit: 100
+            RateLimit: 50
+          UsagePlanName: !Sub ${ServiceName}-${EnvironmentName}
+
+      ApiGUsagePlanApiKey:
+        Type: AWS::ApiGateway::UsagePlanKey
+        Properties:
+          KeyId: !Ref ApiKey
+          KeyType: API_KEY
+          UsagePlanId: !Ref ApiGUsagePlan
+
+      ApiKey: 
+          Type: AWS::ApiGateway::ApiKey
+          DependsOn: 
+              - ApiGatewayDeployment
+              - ApiGAPI
+          Properties: 
+            Name: !Sub ${ServiceName}-${EnvironmentName}
+            Description: API Key
+            Enabled: true
+            StageKeys: 
+                - RestApiId: !Ref ApiGAPI
+                  StageName: !Ref ApiGatewayDeployment
+
+      ApiGatewayDeployment:
+          Type: AWS::ApiGateway::Deployment
+          Properties:
+              Description: !Sub ${EnvironmentName} deployment
+              RestApiId: !Ref ApiGAPI
+              StageName: !Ref EnvironmentName
+              StageDescription:
+                  Variables:
+                      NLB: !Ref LoadBalancerUrl
+                      # VPC_LINK_ID: !Ref VpcLink # If applicable
+
+      # If using a Private VPC
+      # VpcLink:
+      #   Type: AWS::ApiGateway::VpcLink
+      #   Properties:
+      #     Description: API Gateway VPC link to the private VPC
+      #     Name: !Sub ${ServiceName}-${EnvironmentName}-vpc-link
+      #     TargetArns:
+      #       - !Ref NetworkLoadBalancer

@@ -1,0 +1,187 @@
+Description: ECS Infrastructure for the actual application. Requires a build job to update the DesiredCount for the service after deployment of ECR
+
+Parameters: 
+
+    ServiceName:
+        Description: Name of the service being deployed
+        Type: String
+    
+    ContainerPort:
+        Description: Port the application is listening on in the container
+        Type: Number
+    
+    ImageTag:
+        Description: ECR image to spin the service up with. Default - latest
+        Type: String
+        Default: latest
+
+    CPU:
+        Description: Number of CPU Units to spin up the container with. Default - 256
+        Type: Number
+        Default: 256
+
+    Memory:
+        Description: Number of Memory Units to spin up the container with. Default - 512
+        Type: Number
+        Default: 512
+
+    VPC:
+        Description: The VPC that the ECS cluster is deployed to
+        Type: AWS::EC2::VPC::Id
+    
+    Subnets:
+        Description: Subnets to deploy Fargate instances to
+        Type: List<String>
+        
+    Cluster:
+        Description: ECS Cluster ID that this service should run on
+        Type: String
+
+    Listener:
+        Description: The Load Balancer listener to register with
+        Type: String
+    
+    TargetGroup:
+        Description: The Load Balancer Target Group to register with
+        Type: String
+
+    ServiceSecurityGroup:
+        Description: Security Groups to assign to the ECS Services
+        Type: List<String>
+
+Resources:
+
+    ServiceDb:
+      Type : AWS::RDS::DBInstance
+      Properties:
+          DBInstanceIdentifier: !Ref ServiceName
+          VPCIdSecurityGroups:
+              - !Ref DbSecurityGroup
+          AllocatedStorage: 1000
+          PubliclyAccessible: false
+          MultiAZ: false
+          StorageEncrypted: false
+          StorageType: gp2
+          BackupRetentionPeriod: 0
+          DBInstanceClass: db.t2.micro
+          Engine: MySQL
+          MasterUsername: root
+          MasterUserPassword: !Ref MysqlPass
+          # DBParameterGroupName: !Ref RDSParamGroup
+          DBSubnetGroupName: Ref: DbSubnetGroup
+
+    DbSubnetGroup:
+        Type: AWS::RDS::DBSubnetGroup
+        Properties:
+            DBSubnetGroupDescription: Subnet available for the RDS DB Instance
+            SubnetIds: !Ref SubnetIds
+
+    DbSecurityGroup :
+        Type : AWS::EC2::SecurityGroup
+        Properties :
+            GroupDescription : Enable MySQL access from the ECS Services
+            VpcId: !Ref VPC
+            SecurityGroupIngress:
+                - IpProtocol : tcp
+                  FromPort : 3306
+                  ToPort : 3306
+                  CidrIp : 192.168.1.0/24 # TODO
+    
+    Service:
+        Type: AWS::ECS::Service
+        Properties:
+            ServiceName: !Sub ${ServiceName}-${EnvironmentName}
+            Cluster: !Ref Cluster
+            Role: !Ref ServiceRole
+            DesiredCount: 0 # Zero to prevent constant instance respawns on fresh builds. Updated by the CodeBuild job for the environment
+            HealthCheckGracePeriodSeconds: 10
+            LaunchType: FARGATE
+            LoadBalancers:
+                - ContainerName: !Ref ServiceName
+                  ContainerPort: !Ref ContainerPort
+                  TargetGroupArn: !Ref TargetGroup
+            DeploymentConfiguration:
+              MinimumHealthyPercent: 100
+              MaximumPercent: 200
+            TaskDefinition: !Ref TaskDefinition
+            NetworkConfiguration:
+                AwsvpcConfiguration:
+                    AssignPublicIp: DISABLED
+                    SecurityGroups: !Ref ServiceSecurityGroups
+                    Subnets: !Ref Subnets
+
+    TaskDefinition:
+        Type: AWS::ECS::TaskDefinition
+        Properties:
+            Family: !Ref ServiceName
+            NetworkMode: awsvpc
+            RequiresCompatibilities:
+                - FARGATE
+            Cpu: !Ref CPU
+            Memory: !Ref Memory
+            ContainerDefinitions:
+                - Name: !Ref ServiceName
+                  Essential: true
+                  Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ServiceName}:${ImageTag}
+                  Cpu: !Ref CPU
+                  MemoryReservation: !Ref Memory
+                  PortMappings:
+                    - ContainerPort: !Ref ContainerPort
+                  LogConfiguration:
+                    LogDriver: awslogs
+                    Options:
+                        awslogs-group: !Ref CloudWatchLogsGroup
+                        awslogs-region: !Ref AWS::Region
+                        awslogs-stream-prefix: ecs
+                  Environment:
+                    - Name: APPLICATION_SECRET
+                      Value: !Ref AppSecret
+                    - Name: JWT_SECRET
+                      Value: !Ref JwtSecret
+                    - Name: MYSQL_URL
+                      Value: !GetAtt ServiceDb.Endpoint.Address
+                    - Name: MYSQL_PASSWORD
+                      Value: !Ref MysqlPass
+    
+    CloudWatchLogsGroup:
+        Type: AWS::Logs::LogGroup
+        Properties: 
+            LogGroupName: !Ref AWS::StackName
+            RetentionInDays: 30  
+
+
+    # This IAM Role grants the service access to register/unregister with the Load Balancer
+    ServiceRole: 
+        Type: AWS::IAM::Role
+        Properties: 
+            RoleName: !Sub ecs-service-${ServiceName}
+            Path: /
+            AssumeRolePolicyDocument: |
+                {
+                    "Statement": [{
+                        "Effect": "Allow",
+                        "Principal": { "Service": [ "ecs.amazonaws.com" ]},
+                        "Action": [ "sts:AssumeRole" ]
+                    }]
+                }
+            Policies: 
+                - PolicyName: !Sub ecs-service-${ServiceName}
+                  PolicyDocument: 
+                    {
+                        "Version": "2012-10-17",
+                        "Statement": [{
+                                "Effect": "Allow",
+                                "Action": [
+                                    "ec2:AuthorizeSecurityGroupIngress",
+                                    "ec2:Describe*",
+                                    "elasticloadbalancing:DeregisterInstancesFromLoadBalancer",
+                                    "elasticloadbalancing:Describe*",
+                                    "elasticloadbalancing:RegisterInstancesWithLoadBalancer",
+                                    "elasticloadbalancing:DeregisterTargets",
+                                    "elasticloadbalancing:DescribeTargetGroups",
+                                    "elasticloadbalancing:DescribeTargetHealth",
+                                    "elasticloadbalancing:RegisterTargets"
+                                ],
+                                "Resource": "*"
+                        }]
+                    }

@@ -1,0 +1,42 @@
+Description: AWS CloudFormation template to create a new ECS Fargate Cluster and VPC configuration
+
+Parameters:
+
+    ClusterName:
+        Type: String
+        Description: Name of the ECS Cluster to create
+
+    VPC:
+        Type: AWS::EC2::VPC::Id
+        Description: Which VPC to deployed to
+
+    LoadBalancerSecurityGroup:
+        Type: String
+        Description: Security Group attached to the Load Balancer to allow Ingress traffic from
+
+Resources:
+
+    EcsCluster:
+      Type: AWS::ECS::Cluster
+      Properties:
+        ClusterName: !Ref ClusterName
+    
+    # Allows access to the ECS Services for the Load Balancers
+    ECSHostSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties: 
+            VpcId: !Ref VPC
+            GroupDescription: Access to the ECS hosts and the tasks/containers that run on them
+            SecurityGroupIngress:
+                - SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup 
+                  IpProtocol: -1
+
+Outputs:
+
+    Cluster: 
+        Description: Cluster created
+        Value: !Ref EcsCluster
+
+    ECSHostSecurityGroup: 
+        Description: A reference to the security group for ECS hosts
+        Value: !Ref ECSHostSecurityGroup

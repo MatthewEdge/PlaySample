@@ -1,0 +1,195 @@
+---
+# CloudFormation template for the ECS infrastructure. Assumes that core infrastructure (ECS Cluster, VPC, SecurityGroup, and Subnets)
+# are already created
+#
+# Resources to create before running:
+#   S3 Bucket named `${EnvironmentName}-swagger` to support swagger uploads to API Gateway
+#   ECR repository which matches name found in `ecrImage` variable
+#
+# First run `aws cloudformation package --template ./ci/ecs-cft.yml --s3-bucket ${SWAGGER_S3_BUCKET} --output-template-file packaged.yml`
+#   Where SWAGGER_S3_BUCKET is the aforementioned bucket name
+#
+# Then deploy the generated `packaged.yml` template
+
+Parameters:
+  EnvironmentName:
+      Description: Which environment are you deploying to?
+      Type: String
+      AllowedValues:
+          - dev
+          - qa
+          - uat
+          - prod
+      Default: dev
+
+  BaseUrl:
+    Description: Base Domain URL for the application (for API Gateway)
+    Type: String
+    Default: myapp.medgelabs.io
+
+  EcrRepoName:
+    Description: ECR Repository name
+    Type: String
+    Default: myapp
+  
+  ContainerPort:
+    Description: Container Port the application is listening on
+    Type: Number
+    Default: 9000
+  
+  # TODO these should come from SSM
+  AppSecret:
+    Description: Play application secret
+    Type: String
+    NoEcho: True
+
+  JwtSecret:
+    Description: JWT secret
+    Type: String
+    NoEcho: True
+
+  MysqlPass:
+    Description: MySQL Password
+    Type: String
+    NoEcho: True
+
+  EcsCluster: 
+    Description: ECS Cluster to deploy to
+    Type: String
+
+  VPC:
+    Description: VPC for the running Cluster
+    Type: AWS::EC2::VPC::Id
+
+  Subnets:
+    Description: ECS Cluster Subnets
+    Type: List<String>
+
+  ServiceSecurityGroups:
+    Description: Security groups to attach to the ECS Services
+    Type: List<String>
+
+Mappings:
+  EnvMap:
+    dev:
+      executionIamRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole
+      cpus: 512
+      memory: 1024
+      gatewayDomainName: dev.myapp.medgelabs.io
+      mysqlUrl: jdbc:mysql://myapp.coluonmkvdee.us-east-1.rds.amazonaws.com:3306/myapp
+
+Conditions:
+  isProduction: !Equals [!Ref EnvironmentName, prod]
+
+Resources:
+
+    # ECS
+    CloudWatchLogsGroup:
+        Type: AWS::Logs::LogGroup
+        Properties:
+            LogGroupName: !Sub /ecs/myapp-${EnvironmentName}
+            RetentionInDays: 30
+    
+    EcrRepository:
+      Type: AWS::ECR::Repository
+      Properties:
+        RepositoryName: !Ref EcrRepositoryName
+
+    EcsTaskDef:
+      Type: AWS::ECS::TaskDefinition
+      Properties:
+        Family: !Sub myapp-${EnvironmentName}
+        TaskRoleArn: !FindInMap [EnvMap, !Ref EnvironmentName, executionIamRoleArn]
+        ExecutionRoleArn: !FindInMap [EnvMap, !Ref EnvironmentName, executionIamRoleArn]
+        NetworkMode: awsvpc
+        RequiresCompatibilities:
+          - FARGATE
+        Cpu: !FindInMap [EnvMap, !Ref EnvironmentName, cpus]
+        Memory: !FindInMap [EnvMap, !Ref EnvironmentName, memory]
+        ContainerDefinitions:
+          - Name: !Sub myapp-${EnvironmentName}
+            Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepoName}:latest
+            Cpu: !FindInMap [EnvMap, !Ref EnvironmentName, cpus]
+            PortMappings:
+              - ContainerPort: !Ref ContainerPort
+            MemoryReservation: !FindInMap [EnvMap, !Ref EnvironmentName, memory]
+            Essential: 'true'
+            LogConfiguration:
+              LogDriver: awslogs
+              Options:
+                awslogs-group: !Ref CloudWatchLogsGroup
+                awslogs-region: !Ref AWS::Region
+                awslogs-stream-prefix: ecs
+            Environment:
+              - Name: APPLICATION_SECRET
+                Value: !Ref AppSecret
+              - Name: JWT_SECRET
+                Value: !Ref JwtSecret
+              - Name: MYSQL_URL
+                Value: !FindInMap [EnvMap, !Ref EnvironmentName, mysqlUrl]
+              - Name: MYSQL_PASSWORD
+                Value: !Ref MysqlPass
+
+    EcsService:
+      Type: AWS::ECS::Service
+      DependsOn: NetworkLoadBalancer
+      Properties:
+        ServiceName: !Sub myapp-${EnvironmentName}
+        Cluster: !Ref EcsCluster
+        DesiredCount: 0 # Zero to prevent constant instance respawns on fresh builds. Updated by the CodeBuild job for the environment
+        HealthCheckGracePeriodSeconds: 10
+        LaunchType: FARGATE
+        LoadBalancers:
+          - ContainerName: !Sub myapp-${EnvironmentName}
+            ContainerPort: !Ref ContainerPort
+            TargetGroupArn: !Ref ServicesTargetGroup
+        DeploymentConfiguration:
+          MinimumHealthyPercent: 100
+          MaximumPercent: 200
+        TaskDefinition: !Ref EcsTaskDef
+        NetworkConfiguration:
+          AwsvpcConfiguration:
+            AssignPublicIp: DISABLED
+            SecurityGroups: !Ref ServiceSecurityGroups
+            Subnets: !Ref Subnets
+  
+    # API Gateway
+    
+    # If using a Private VPC
+    # VpcLink:
+    #   Type: AWS::ApiGateway::VpcLink
+    #   Properties:
+    #     Description: API Gateway VPC link to the private VPC
+    #     Name: !Sub myapp-${EnvironmentName}-vpc-link
+    #     TargetArns:
+    #       - !Ref NetworkLoadBalancer
+
+    ApiGBasePathMapping:
+      Type: AWS::ApiGateway::BasePathMapping
+      DependsOn: ApiGatewayDeployment
+      Properties:
+        BasePath: /
+        DomainName: !Sub ${EnvironmentName}.${BaseUrl}
+        RestApiId:
+          Ref: ApiGAPI
+        Stage: !Ref EnvironmentName
+        
+    ApiGUsagePlan:
+        Type: AWS::ApiGateway::UsagePlan
+        DependsOn: ApiGatewayDeployment
+        Properties:
+          ApiStages:
+            - ApiId: !Ref ApiGAPI
+              Stage: !Ref EnvironmentName
+          Description: !Sub myapp-${EnvironmentName}
+          Throttle:
+            BurstLimit: 100
+            RateLimit: 50
+          UsagePlanName: !Sub myapp-${EnvironmentName}
+
+      ApiGUsagePlanApiKey:
+        Type: AWS::ApiGateway::UsagePlanKey
+        Properties:
+          KeyId: TODO-MAKE-KEY
+          KeyType: API_KEY
+          UsagePlanId: !Ref ApiGUsagePlan

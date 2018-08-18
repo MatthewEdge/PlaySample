@@ -1,0 +1,88 @@
+Description: AWS CloudFormation template to createa new VPC with a single Public Subnet
+
+Parameters:
+
+    VpcCIDR:
+        Type: String
+        Description: Name of the ECS Cluster to create
+
+    PublicSubnet1CIDR:
+        Type: String
+        Description: Name of the ECS Cluster to create
+
+    PublicSubnet2CIDR:
+        Type: String
+        Description: Name of the ECS Cluster to create
+
+Resources:
+    
+    VPC:
+        Type: AWS::EC2::VPC
+        Properties:
+            CidrBlock: !Ref VpcCIDR
+            EnableDnsSupport: true
+            EnableDnsHostnames: true
+
+    PublicSubnet1:
+        Type: AWS::EC2::Subnet
+        Properties:
+            VpcId: !Ref VPC
+            CidrBlock: !Ref PublicSubnet1CIDR
+            AvailabilityZone: !GetAZs: !Ref AWS::Region
+
+    PublicSubnet2:
+        Type: AWS::EC2::Subnet
+        Properties:
+            VpcId: !Ref VPC
+            CidrBlock: !Ref PublicSubnet2CIDR
+            AvailabilityZone: !GetAZs: !Ref AWS::Region
+
+    InternetGateway:
+        Type: AWS::EC2::InternetGateway
+
+    AttachGateway:
+        Type: AWS::EC2::VPCGatewayAttachment
+        Properties:
+            VpcId: !Ref VPC
+            InternetGatewayId: !Ref InternetGateway
+
+    RouteViaIgw:
+        Type: AWS::EC2::RouteTable
+
+    PublicRouteViaIgw:
+        Type: AWS::EC2::Route
+        DependsOn: AttachGateway
+        Properties:
+            RouteTableId: !Ref RouteViaIgw
+            DestinationCidrBlock: 0.0.0.0/0
+            GatewayId: !Ref InternetGateway
+
+    PublicSubnet1RouteTableAssociation:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+            SubnetId: !Ref PublicSubnet1
+            RouteTableId: !Ref RouteViaIgw
+
+    PublicSubnet2RouteTableAssociation:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+            SubnetId: !Ref PublicSubnet2
+            RouteTableId: !Ref RouteViaIgw
+
+Outputs:
+
+    VPC: 
+        Description: A reference to the created VPC
+        Value: !Ref VPC
+
+    Subnets:
+        Description: A list of the public subnets
+        Value: !Join [ ",", [ !Ref PublicSubnet1, !Ref PublicSubnet2 ]]
+
+    PublicSubnet1:
+        Description: A reference to the public subnet in the 1st Availability Zone
+        Value: !Ref PublicSubnet1
+
+    PublicSubnet2: 
+        Description: A reference to the public subnet in the 2nd Availability Zone
+        Value: !Ref PublicSubnet2

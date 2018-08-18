@@ -1,0 +1,200 @@
+---
+# Purpose: CloudFormation Template to create CodeBuild projects for each environment
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: CodeBuild Resources
+
+Parameters:
+
+  EcrRepository:
+    Description: ECR Repository to deploy to
+    Type: String
+    Default: myapp
+
+  Cluster:
+    Description: ECS Cluser name to deploy to
+    Type: String
+    Default: myapp
+
+Resources:
+
+  CodeBuildDevIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codebuild.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: AccessToCloudFormation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Resource: '*'
+                Action:
+                - cloudformation:CancelUpdateStack
+                - cloudformation:ContinueUpdateRollback
+                - cloudformation:CreateChangeSet
+                - cloudformation:CreateStack
+                - cloudformation:CreateUploadBucket
+                - cloudformation:DeleteStack
+                - cloudformation:Describe*
+                - cloudformation:DescribeAccountLimits
+                - cloudformation:DescribeChangeSet
+                - cloudformation:DescribeStackEvents
+                - cloudformation:DescribeStackResource
+                - cloudformation:DescribeStackResources
+                - cloudformation:DescribeStacks
+                - cloudformation:EstimateTemplateCost
+                - cloudformation:ExecuteChangeSet
+                - cloudformation:Get*
+                - cloudformation:GetStackPolicy
+                - cloudformation:GetTemplate
+                - cloudformation:GetTemplateSummary
+                - cloudformation:List*
+                - cloudformation:ListChangeSets
+                - cloudformation:ListExports
+                - cloudformation:ListImports
+                - cloudformation:ListStackResources
+                - cloudformation:ListStacks
+                - cloudformation:PreviewStackUpdate
+                - cloudformation:SetStackPolicy
+                - cloudformation:SignalResource
+                - cloudformation:UpdateStack
+                - cloudformation:UpdateTerminationProtection
+                - cloudformation:ValidateTemplate
+        - PolicyName: CodeBuildEcsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Resource: '*'
+                Action:
+                - apigateway:DELETE
+                - apigateway:GET
+                - apigateway:POST
+                - apigateway:PUT
+                - cloudwatch:DescribeAlarms
+                - cloudwatch:GetMetricStatistics
+                - cloudwatch:PutMetricData
+                - codebuild:StopBuild
+                - ec2:CreateSecurityGroup
+                - ec2:DescribeInstanceStatus
+                - ec2:DescribeNetworkInterfaces
+                - ec2:DescribeRegions
+                - ec2:DescribeSecurityGroups
+                - ec2:DescribeSubnets
+                - ec2:DescribeVpcs
+                - ec2:RunInstances
+                - ecr:BatchCheckLayerAvailability
+                - ecr:BatchGetImage
+                - ecr:CompleteLayerUpload
+                - ecr:DescribeImages
+                - ecr:DescribeRepositories
+                - ecr:GetAuthorizationToken
+                - ecr:GetDownloadUrlForLayer
+                - ecr:GetRepositoryPolicy
+                - ecr:InitiateLayerUpload
+                - ecr:ListImages
+                - ecr:PutImage
+                - ecr:SetRepositoryPolicy
+                - ecr:UploadLayerPart
+                - ecs:DescribeClusters
+                - ecs:DescribeContainerInstances
+                - ecs:DescribeServices
+                - ecs:DescribeTaskDefinition
+                - ecs:DescribeTasks
+                - ecs:ListClusters
+                - ecs:ListContainerInstances
+                - ecs:ListServices
+                - ecs:ListTaskDefinitionFamilies
+                - ecs:ListTaskDefinitions
+                - ecs:ListTasks
+                - ecs:UpdateService
+                - iam:AttachRolePolicy
+                - iam:CreateRole
+                - iam:DeleteRole
+                - iam:DeleteRolePolicy
+                - iam:DetachRolePolicy
+                - iam:GetRole
+                - iam:PassRole
+                - iam:PutRolePolicy
+                - logs:*
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:DeleteLogGroup
+                - logs:DeleteLogStream
+                - logs:DescribeLogStreams
+                - logs:FilterLogEvents
+
+  CodeBuildTests:
+    Type: "AWS::CodeBuild::Project"
+    Properties:
+      Name: MyApp-TestsOnlyRun
+      Description: Run unit and integration tests
+      ServiceRole: !GetAtt CodeBuildDevIamRole.Arn
+      Artifacts:
+        Type: no_artifacts
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: bigtruedata/sbt
+        PrivilegedMode: False
+      Source:
+        Type: GITHUB
+        Auth:
+          Type: OAUTH
+        Location: TODO
+        BuildSpec: ci/buildspec-test.yml
+        GitCloneDepth: 1
+      TimeoutInMinutes: 10
+
+  # S3 Bucket for Swagger Uploads
+  DevSwaggerS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: myapp-dev-swagger
+
+  CodeBuildDev:
+    Type: "AWS::CodeBuild::Project"
+    Properties:
+      Name: MyApp-DEV
+      Description: Build and deploy for the DEV environment
+      ServiceRole: !GetAtt CodeBuildDevIamRole.Arn
+      BadgeEnabled: True
+      Artifacts:
+        Type: no_artifacts
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/docker:17.09.0
+        PrivilegedMode: True
+        EnvironmentVariables:
+          - Name: CFN_ENV
+            Type: PLAINTEXT
+            Value: dev
+          - Name: SWAGGER_S3_BUCKET
+            Type: PLAINTEXT
+            Value: !GetAtt DevSwaggerS3Bucket.BucketName
+          - Name: REPO_NAME
+            Type: PLAINTEXT
+            Value: !Ref EcrRepo
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: myapp-service
+          - Name: CLUSTER_NAME
+            Type: PLAINTEXT
+            Value: !Ref Cluster
+      Source:
+        Type: GITHUB
+        Auth:
+          Type: OAUTH
+        Location: TODO
+        BuildSpec: ci/buildspec-build.yml
+        GitCloneDepth: 1
+      TimeoutInMinutes: 30

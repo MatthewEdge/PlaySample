@@ -1,0 +1,97 @@
+Description: >
+    This template deploys a VPC, with a pair of public and private subnets spread 
+    across two Availabilty Zones. It deploys an Internet Gateway, with a default 
+    route on the public subnets. It deploys a pair of NAT Gateways (one in each AZ), 
+    and default routes for them in the private subnets.
+    It then deploys a highly available ECS cluster using an AutoScaling Group, with 
+    ECS hosts distributed across multiple Availability Zones. 
+    Finally, it deploys a pair of example ECS services from containers published in 
+    Amazon EC2 Container Registry (Amazon ECR).
+    Author: Paul Maddox <pmaddox@amazon.com>
+
+Parameters:
+
+  EnvironmentName:
+      Description: Which environment are you deploying to?
+      Type: String
+      AllowedValues:
+          - dev
+          - qa
+          - uat
+          - prod
+      Default: dev
+
+  ServiceName:
+      Description: Name of the application service being deployed
+      Type: String
+      Default: myapp-service
+
+Resources:
+
+    VPC:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: ./infra/vpc.yml
+            Parameters:
+                VpcCIDR: 10.180.0.0/16
+                PublicSubnet1CIDR: 10.180.8.0/21
+                PublicSubnet2CIDR: 10.180.16.0/21
+
+    NLB:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: ./infra/load-balancer.yml
+            Parameters:
+                ServiceName: !Ref ServiceName
+                EnvironmentName: !Ref EnvironmentName
+                VPC: !GetAtt VPC.Outputs.VPC
+                Subnets: !GetAtt VPC.Outputs.PublicSubnets
+                LoadBalancerScheme: internet-facing
+                LoadBalancerIngressSource: 0.0.0.0/0
+                ContainerPort: 9000
+
+    ECS:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: ./infra/ecs-infra.yml
+            Parameters:
+                ClusterName: !Ref EnvironmentName
+                VPC: !GetAtt VPC.Outputs.VPC
+                LoadBalancerSecurityGroup: !GetAtt NLB.Outputs.LoadBalancerSecurityGroup
+
+    AppServiceCodeBuild:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: ./app/codebuild.yml
+            Parameters:
+                Cluster: !Ref ECS.Outputs.Cluster
+                EcrRepository: !Ref ECS.Outputs.EcrRepository
+
+    AppService:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: ./app/api-gateway.yml
+            Parameters:
+                ServiceName: !Ref ServiceName
+                ImageTag: latest
+                VPC: !GetAtt VPC.Outputs.VPC
+                Subnets: !GetAtt VPC.Outputs.Subnets
+                Cluster: !GetAtt ECS.Outputs.Cluster
+                Listener: !GetAtt NLB.Outputs.Listener
+                TargetGroup: !GetAtt NLB.Outputs.TargetGroup
+                EcsServiceSecurityGroup: !GetAtt ECS.Outputs.ECSHostSecurityGroup
+    
+    AppServiceApiGateway:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: ./app/service.yml
+            Parameters:
+                ServiceName: !Ref ServiceName
+                EnvironmentName: !Ref EnvironmentName
+                LoadBalancerUrl: !GetAtt NLB.Outputs.LoadBalancerUrl
+
+Outputs:
+
+    ServiceUrl: 
+        Description: The URL endpoint for the backend service
+        Value: !Join [ "/", [ !GetAtt NLB.Outputs.LoadBalancerUrl ]]

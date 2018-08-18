@@ -1,0 +1,102 @@
+Description: Network Load Balancer that exposes the ECS Services
+
+Parameters:
+
+    ServiceName:
+        Description: Name of the service being deployed
+        Type: String
+
+    EnvironmentName:
+        Description: An environment name that will be prefixed to resource names
+        Type: String
+
+    VPC:
+        Type: AWS::EC2::VPC::Id
+        Description: Choose which VPC the Application Load Balancer should be deployed to
+
+    Subnets:
+        Description: Choose which subnets the Application Load Balancer should be deployed to
+        Type: List<AWS::EC2::Subnet::Id>
+
+    LoadBalancerScheme:
+        Description: NLB Scheme
+        Type: String
+        AllowedValues:
+          - internal
+          - internet-facing
+
+    LoadBalancerIngressSource:
+        Description: Ingress Source allowed to the Load Balancer
+        Type: String
+        Default: 0.0.0.0/0
+
+    ContainerPort:
+        Description: Port the application is listening on in the container
+        Type: Number
+
+Resources:
+
+    # Access to the Load Balancer
+    LoadBalancerSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties: 
+            VpcId: !Ref VPC
+            GroupDescription: Access to the load balancer that sits in front of ECS
+            SecurityGroupIngress:
+                - CidrIp: !Ref LoadBalancerIngressSource
+                  IpProtocol: -1
+
+    NetworkLoadBalancer:
+        Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+        Properties:
+            Name: !Sub ${ServiceName}-${EnvironmentName}-nlb
+            Type: network
+            Scheme: !Ref LoadBalancerScheme
+            IpAddressType: ipv4
+            Subnets: !Ref Subnets
+            SecurityGroups: 
+                - !Ref LoadBalancerSecurityGroup
+
+    NetworkLoadBalancerListener:
+        Type: AWS::ElasticLoadBalancingV2::Listener
+        Properties:
+            LoadBalancerArn: !Ref NetworkLoadBalancer
+            Port: 80
+            Protocol: TCP
+            DefaultActions:
+                - Type: forward
+                  TargetGroupArn: !Ref ServicesTargetGroup
+
+    ServicesTargetGroup:
+        Type: AWS::ElasticLoadBalancingV2::TargetGroup
+        Properties:
+            Name: !Sub ${ServiceName}-${EnvironmentName}-tg
+            Port: !Ref ContainerPort
+            Protocol: TCP
+            TargetType: ip
+            VpcId: !Ref VPC
+            TargetGroupAttributes:
+                - Key: "deregistration_delay.timeout_seconds"
+                  Value: 5
+
+Outputs:
+
+    LoadBalancer:
+        Description: A reference to the Load Balancer ARN
+        Value: !Ref NetworkLoadBalancer
+
+    LoadBalancerUrl:
+        Description: The URL of the Load Balancer
+        Value: !GetAtt NetworkLoadBalancer.DNSName
+
+    Listener:
+        Description: A reference to a port 80 listener
+        Value: !Ref NetworkLoadBalancerListener 
+    
+    TargetGroup:
+        Description: A reference to a port 80 listener
+        Value: !Ref ServicesTargetGroup
+
+    LoadBalancerSecurityGroup:
+        Description: Reference to the created Load Balancer Security Group
+        Value: !Ref LoadBalancerSecurityGroup
